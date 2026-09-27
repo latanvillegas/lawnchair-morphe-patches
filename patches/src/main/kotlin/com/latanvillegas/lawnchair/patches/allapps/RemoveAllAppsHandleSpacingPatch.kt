@@ -5,6 +5,7 @@ import app.morphe.patcher.extensions.InstructionExtensions.replaceInstruction
 import app.morphe.patcher.methodCall
 import app.morphe.patcher.patch.Compatibility
 import app.morphe.patcher.patch.bytecodePatch
+import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
 
 private const val ALL_APPS_CONTAINER =
     "Lcom/android/launcher3/allapps/ActivityAllAppsContainerView;"
@@ -40,14 +41,20 @@ val removeAllAppsHandleSpacingPatch = bytecodePatch(
     execute {
         val handleCallIndex =
             LayoutWithoutSearchContainerFingerprint.instructionMatches.first().index
+        val method = LayoutWithoutSearchContainerFingerprint.method
 
-        // This is the verified handle-spacing modification. Newer Nightlies such as
-        // #5171 do not expose the old allAppsPadding.top read in setInsets(), so do
-        // not fail the entire patch set trying to modify an instruction that is not
-        // present in that build.
-        LayoutWithoutSearchContainerFingerprint.method.replaceInstruction(
+        // Source equivalent:
+        // remove the shouldShowAllAppsOnSheet() branch that assigns
+        // bottom_sheet_handle_area_height to topMargin. Keep the result register
+        // used by this exact APK instead of assuming it is always v0.
+        val resultInstruction = method.instructions[handleCallIndex + 1]
+            as? OneRegisterInstruction
+            ?: error("Expected move-result after shouldShowAllAppsOnSheet()")
+        val resultRegister = resultInstruction.registerA
+
+        method.replaceInstruction(
             handleCallIndex + 1,
-            "const/4 v0, 0x0",
+            "const/4 v$resultRegister, 0x0",
         )
     }
 }
