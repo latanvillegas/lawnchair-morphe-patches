@@ -43,13 +43,10 @@ val removeAllAppsHandleSpacingPatch = bytecodePatch(
             LayoutWithoutSearchContainerFingerprint.instructionMatches.first().index
         val method = LayoutWithoutSearchContainerFingerprint.method
 
-        // Source equivalent:
-        // remove the shouldShowAllAppsOnSheet() branch that assigns
-        // bottom_sheet_handle_area_height to topMargin. Keep the result register
-        // used by this exact APK instead of assuming it is always v0.
-        val resultInstruction = method.instructions[handleCallIndex + 1]
-            as? OneRegisterInstruction
-            ?: error("Expected move-result after shouldShowAllAppsOnSheet()")
+        // The invoke is followed by move-result. Read its actual destination register
+        // instead of assuming that this APK always uses v0.
+        val resultInstruction: OneRegisterInstruction =
+            method.getInstruction(handleCallIndex + 1)
         val resultRegister = resultInstruction.registerA
 
         method.replaceInstruction(
