@@ -1,8 +1,6 @@
 name: Bootstrap Morphe patches template
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 permissions:
@@ -17,42 +15,56 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Import official Morphe template
+      - name: Import official Morphe template safely
         shell: bash
         run: |
           set -euo pipefail
+
           git clone --depth 1 https://github.com/MorpheApp/morphe-patches-template.git /tmp/morphe-template
-          rsync -a --delete --exclude='.git' --exclude='.github/workflows/bootstrap-template.yml' /tmp/morphe-template/ ./
+
+          # Import the official template without deleting our repository-specific files.
+          # Workflows are excluded because GITHUB_TOKEN cannot create/update workflow files
+          # unless it has the separate workflows permission.
+          # Existing custom .patch files are also preserved.
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github/workflows/' \
+            --exclude='patches/*.patch' \
+            /tmp/morphe-template/ ./
 
           python3 - <<'PY'
           from pathlib import Path
 
           p = Path('patches/build.gradle.kts')
-          s = p.read_text()
-          s = s.replace('group = "app.template"', 'group = "com.latanvillegas.lawnchair.patches"')
-          s = s.replace('name = "UserXYZ Patches"', 'name = "Lawnchair Custom Patches"')
-          s = s.replace('description = "Patches for apps I like"', 'description = "Custom Lawnchair patches: AMOLED/OLED pure black and UI refinements"')
-          s = s.replace('source = "git@github.com:UserXYZ/morphe-patches.git"', 'source = "https://github.com/latanvillegas/lawnchair-morphe-patches"')
-          s = s.replace('author = "Awesome dev"', 'author = "latanvillegas"')
-          s = s.replace('website = "na"', 'website = "https://github.com/latanvillegas/lawnchair-morphe-patches"')
-          p.write_text(s)
+          if p.exists():
+              s = p.read_text()
+              s = s.replace('group = "app.template"', 'group = "com.latanvillegas.lawnchair.patches"')
+              s = s.replace('name = "UserXYZ Patches"', 'name = "Lawnchair Custom Patches"')
+              s = s.replace('description = "Patches for apps I like"', 'description = "Custom Lawnchair patches: AMOLED/OLED pure black and UI refinements"')
+              s = s.replace('source = "git@github.com:UserXYZ/morphe-patches.git"', 'source = "https://github.com/latanvillegas/lawnchair-morphe-patches"')
+              s = s.replace('author = "Awesome dev"', 'author = "latanvillegas"')
+              s = s.replace('website = "na"', 'website = "https://github.com/latanvillegas/lawnchair-morphe-patches"')
+              p.write_text(s)
 
           r = Path('README.md')
-          s = r.read_text()
-          s = s.replace('👋🧩 Morphe Patches template', '🪑 Lawnchair Custom Patches')
-          s = s.replace('Template repository for Morphe Patches.', 'Custom patches for Lawnchair, distributed as a Morphe patch source.')
-          s = s.replace('Patches for apps I like.', 'Patches for Lawnchair including AMOLED/OLED pure black UI refinements.')
-          s = s.replace('xyz-user/xyz-patches', 'latanvillegas/lawnchair-morphe-patches')
-          s = s.replace('UserXYZ Patches', 'Lawnchair Custom Patches')
-          r.write_text(s)
+          if r.exists():
+              s = r.read_text()
+              s = s.replace('👋🧩 Morphe Patches template', '🪑 Lawnchair Custom Patches')
+              s = s.replace('Template repository for Morphe Patches.', 'Custom patches for Lawnchair, distributed as a Morphe patch source.')
+              s = s.replace('Patches for apps I like.', 'Patches for Lawnchair including AMOLED/OLED pure black UI refinements.')
+              s = s.replace('xyz-user/xyz-patches', 'latanvillegas/lawnchair-morphe-patches')
+              s = s.replace('UserXYZ Patches', 'Lawnchair Custom Patches')
+              r.write_text(s)
           PY
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
+
           if git diff --cached --quiet; then
             echo 'Template already up to date.'
             exit 0
           fi
-          git commit -m 'chore: import official Morphe patches template'
+
+          git commit -m 'chore: import official Morphe patches template safely'
           git push origin main
