@@ -10,12 +10,15 @@ private const val ALL_APPS_CONTAINER =
     "Lcom/android/launcher3/allapps/ActivityAllAppsContainerView;"
 
 /**
- * Removes the extra top margin Lawnchair reserves for the All Apps drag handle.
+ * Removes the extra top space in All Apps.
  *
- * Stock layoutWithoutSearchContainer() asks DeviceProfile.shouldShowAllAppsOnSheet()
- * and, when true, initializes topMargin with bottom_sheet_handle_area_height.
- * The customized Lawnchair source removes that block entirely. This patch reproduces
- * the same result by forcing that one call's result to false only inside this method.
+ * There are two independent sources of top spacing in current Lawnchair builds:
+ * 1. layoutWithoutSearchContainer() reserves room for the bottom-sheet handle.
+ * 2. setInsets() uses DeviceProfile.allAppsPadding.top for the All Apps content.
+ *
+ * The first fingerprint forces the handle-specific branch to use zero margin.
+ * The second forces the top padding passed to the All Apps container to zero while
+ * leaving the horizontal and bottom padding logic untouched.
  */
 private object LayoutWithoutSearchContainerFingerprint : Fingerprint(
     definingClass = ALL_APPS_CONTAINER,
@@ -32,10 +35,25 @@ private object LayoutWithoutSearchContainerFingerprint : Fingerprint(
     ),
 )
 
+private object AllAppsSetInsetsFingerprint : Fingerprint(
+    definingClass = ALL_APPS_CONTAINER,
+    name = "setInsets",
+    returnType = "V",
+    parameters = listOf("Landroid/graphics/Rect;"),
+    filters = listOf(
+        methodCall(
+            definingClass = "Lcom/android/launcher3/DeviceProfile;",
+            name = "shouldShowAllAppsOnSheet",
+            parameters = emptyList(),
+            returnType = "Z",
+        ),
+    ),
+)
+
 @Suppress("unused")
 val removeAllAppsHandleSpacingPatch = bytecodePatch(
     name = "Remove All Apps handle spacing",
-    description = "Removes the empty top spacing reserved for the All Apps drag handle.",
+    description = "Removes the handle spacing and remaining top padding from All Apps.",
 ) {
     compatibleWith(
         Compatibility(
@@ -46,15 +64,52 @@ val removeAllAppsHandleSpacingPatch = bytecodePatch(
     )
 
     execute {
-        val callIndex = LayoutWithoutSearchContainerFingerprint.instructionMatches.first().index
+        val handleCallIndex =
+            LayoutWithoutSearchContainerFingerprint.instructionMatches.first().index
 
-        // In #5155 this is:
-        // invoke-virtual {v0}, DeviceProfile->shouldShowAllAppsOnSheet()Z
-        // move-result v0
-        // Replace only the move-result so the existing control flow takes the zero-margin path.
+        // Force the handle-specific zero-margin path.
         LayoutWithoutSearchContainerFingerprint.method.replaceInstruction(
-            callIndex + 1,
+            handleCallIndex + 1,
             "const/4 v0, 0x0",
         )
+
+        val sheetCallIndex = AllAppsSetInsetsFingerprint.instructionMatches.first().index
+
+        // setInsets() reads allAppsPadding.top immediately around the sheet decision.
+        // Zero the result register used by that top-padding calculation without touching
+        // left/right/bottom padding. This keeps the patch local to the All Apps container.
+        val method = AllAppsSetInsetsFingerprint.method
+        val instructions = method.implementation!!.instructions
+        val start = (sheetCallIndex - 12).coerceAtLeast(0)
+        val end = (sheetCallIndex + 20).coerceAtMost(instructions.lastIndex)
+
+        var patched = false
+        for (index in start..end) {
+            val instruction = instructions[index]
+            if (instruction.opcode.name == "IGET_OBJECT") {
+                // DeviceProfile.allAppsPadding is a Rect. The following IGET of Rect.top
+                // yields the integer top padding; replace that load with zero.
+                for (next in (index + 1)..minOf(index + 5, end)) {
+                    val candidate = instructions[next]
+                    if (candidate.opcode.name == "IGET") {
+                        val text = candidate.toString()
+                        if (text.contains("Landroid/graphics/Rect;->top:I")) {
+                            val registerA =
+                                (candidate as org.jf.dexlib2.iface.instruction.OneRegisterInstruction).registerA
+                            method.replaceInstruction(next, "const/4 v$registerA, 0x0")
+                            patched = true
+                            break
+                        }
+                    }
+                }
+            }
+            if (patched) break
+        }
+
+        if (!patched) {
+            throw app.morphe.patcher.patch.PatchException(
+                "Lawnchair All Apps spacing: allAppsPadding.top load was not found.",
+            )
+        }
     }
 }
