@@ -48,31 +48,41 @@ val pureColorOptionsUiPatch = bytecodePatch(
             ((instruction as? ReferenceInstruction)?.reference as? TypeReference)?.type
         } ?: throw PatchException("Lawnchair pure colors UI: CustomColor type was not found.")
 
-        // Locate the stock two-entry dynamic ColorOption array structurally.
-        val arrayIndex = instructions.indices.firstOrNull { index ->
-            if (instructions[index].opcode != Opcode.NEW_ARRAY) return@firstOrNull false
-            val ref = instructions[index] as? ReferenceInstruction ?: return@firstOrNull false
-            val type = (ref.reference as? TypeReference)?.type ?: return@firstOrNull false
-            if (!type.startsWith("[L")) return@firstOrNull false
+        // ColorOptions has more than one two-entry object array. The previous implementation
+        // could accidentally select the later sequence-combining array. Select the array only
+        // when its size register is initialized by a nearby CONST before NEW_ARRAY.
+        var arrayIndex = -1
+        var sizeIndex = -1
+        for (index in instructions.indices) {
+            if (instructions[index].opcode != Opcode.NEW_ARRAY) continue
+            val ref = instructions[index] as? ReferenceInstruction ?: continue
+            val type = (ref.reference as? TypeReference)?.type ?: continue
+            if (!type.startsWith("[L")) continue
+            val newArray = instructions[index] as? TwoRegisterInstruction ?: continue
+
             val end = minOf(index + 14, instructions.lastIndex)
-            instructions.subList(index, end + 1).count { it.opcode == Opcode.APUT_OBJECT } == 2
-        } ?: throw PatchException("Lawnchair pure colors UI: dynamic color array was not found.")
+            if (instructions.subList(index, end + 1).count { it.opcode == Opcode.APUT_OBJECT } != 2) continue
+
+            val sizeRegister = newArray.registerB
+            val candidateSizeIndex = (index - 1 downTo maxOf(0, index - 12)).firstOrNull { previous ->
+                val instruction = instructions[previous]
+                instruction.opcode.name.startsWith("CONST") &&
+                    (instruction as? OneRegisterInstruction)?.registerA == sizeRegister
+            } ?: continue
+
+            arrayIndex = index
+            sizeIndex = candidateSizeIndex
+            break
+        }
+
+        if (arrayIndex < 0 || sizeIndex < 0) {
+            throw PatchException("Lawnchair pure colors UI: dynamic color array with size initializer was not found.")
+        }
 
         val newArray = instructions[arrayIndex] as? TwoRegisterInstruction
             ?: throw PatchException("Lawnchair pure colors UI: unexpected new-array instruction.")
         val arrayRegister = newArray.registerA
         val sizeRegister = newArray.registerB
-
-        // Different Nightlies can materialize the constant farther away because of R8
-        // register scheduling. Search backwards through the whole basic setup region,
-        // stopping at the previous array allocation. The last write to sizeRegister wins.
-        val lowerBound = (arrayIndex - 1 downTo 0).firstOrNull { instructions[it].opcode == Opcode.NEW_ARRAY }
-            ?.plus(1) ?: 0
-        val sizeIndex = (arrayIndex - 1 downTo lowerBound).firstOrNull { index ->
-            val instruction = instructions[index]
-            instruction.opcode.name.startsWith("CONST") &&
-                (instruction as? OneRegisterInstruction)?.registerA == sizeRegister
-        } ?: throw PatchException("Lawnchair pure colors UI: dynamic array size load was not found.")
 
         method.replaceInstruction(sizeIndex, "const/4 v$sizeRegister, 0x4")
 
