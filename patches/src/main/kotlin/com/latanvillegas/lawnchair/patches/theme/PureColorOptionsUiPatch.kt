@@ -16,18 +16,14 @@ import com.android.tools.smali.dexlib2.iface.reference.TypeReference
 /**
  * Finds ColorOptionsKt.<clinit>() structurally. R8 renames this class on every Nightly,
  * so do not depend on APK #5155's Lje0; name.
- *
- * ColorOptions owns exactly the three top-level List values staticColors,
- * dynamicColors and dynamicColorsWithDefault. Its initializer also creates the
- * twelve stock CustomColor entries before creating the two-element dynamic array.
  */
 private object ColorOptionsClinitFingerprint : Fingerprint(
     name = "<clinit>",
     returnType = "V",
     parameters = emptyList(),
-    custom = { method, classDef ->
+    custom = custom@ { method, classDef ->
         val listFields = classDef.staticFields.count { it.type == "Ljava/util/List;" }
-        val instructions = method.implementation?.instructions?.toList() ?: return@Fingerprint false
+        val instructions = method.implementation?.instructions?.toList() ?: return@custom false
         val allocations = instructions.count { it.opcode == Opcode.NEW_INSTANCE }
         listFields == 3 && allocations >= 12 && instructions.any { it.opcode == Opcode.NEW_ARRAY }
     },
@@ -50,8 +46,6 @@ val pureColorOptionsUiPatch = bytecodePatch(
         val method = ColorOptionsClinitFingerprint.method
         val instructions = method.instructions
 
-        // CustomColor is the type repeatedly allocated for the stock static palette.
-        // Resolve it from bytecode so the patch survives R8 renaming.
         val customColorType = instructions
             .firstNotNullOfOrNull { instruction ->
                 if (instruction.opcode != Opcode.NEW_INSTANCE) return@firstNotNullOfOrNull null
@@ -59,8 +53,6 @@ val pureColorOptionsUiPatch = bytecodePatch(
             }
             ?: throw PatchException("Lawnchair pure colors UI: CustomColor type was not found.")
 
-        // Find the two-element ColorOption[] used to build dynamicColors. The stock
-        // sequence is: new-array, SystemAccent aput, WallpaperPrimary aput, sequenceOf.
         val arrayIndex = instructions.indices.firstOrNull { index ->
             if (instructions[index].opcode != Opcode.NEW_ARRAY) return@firstOrNull false
             val newArray = instructions[index] as? ReferenceInstruction ?: return@firstOrNull false
@@ -76,8 +68,6 @@ val pureColorOptionsUiPatch = bytecodePatch(
         val arrayRegister = newArray.registerA
         val sizeRegister = newArray.registerB
 
-        // The array size is loaded immediately before new-array in Lawnchair's generated
-        // bytecode. Expand 2 -> 4 without assuming a particular local register number.
         val sizeIndex = (arrayIndex - 1 downTo maxOf(0, arrayIndex - 4)).firstOrNull { index ->
             val instruction = instructions[index]
             instruction.opcode.name.startsWith("CONST") &&
@@ -86,10 +76,6 @@ val pureColorOptionsUiPatch = bytecodePatch(
 
         method.replaceInstruction(sizeIndex, "const/4 v$sizeRegister, 0x4")
 
-        // Insert after the second stock entry. Two scratch registers are safe here: the
-        // initializer has already completed the static palette and R8 reuses these locals
-        // immediately afterwards. Restore the original size register to 2 because the same
-        // register is reused later by dynamicColorsWithDefault.
         val secondAput = instructions.indices
             .drop(arrayIndex + 1)
             .filter { instructions[it].opcode == Opcode.APUT_OBJECT }
