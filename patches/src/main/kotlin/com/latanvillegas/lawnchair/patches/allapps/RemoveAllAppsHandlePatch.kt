@@ -1,6 +1,5 @@
 package com.latanvillegas.lawnchair.patches.allapps
 
-import app.morphe.patcher.patch.AppTarget
 import app.morphe.patcher.patch.Compatibility
 import app.morphe.patcher.patch.resourcePatch
 import org.w3c.dom.Element
@@ -8,7 +7,7 @@ import org.w3c.dom.Element
 /**
  * Removes the drag-handle views from Lawnchair's All Apps bottom sheet.
  *
- * This reproduces the resource-side change used by the customized Lawnchair 16-dev build:
+ * This reproduces the resource-side change used by the customized Lawnchair build:
  * bottom_sheet_handle_area and bottom_sheet_handle are removed while the root background
  * remains match_parent.
  */
@@ -22,7 +21,6 @@ val removeAllAppsHandlePatch = resourcePatch(
             name = "Lawnchair Nightly",
             packageName = "app.lawnchair.nightly",
             appIconColor = 0x8BC34A,
-            targets = listOf(AppTarget("16-dev")),
         ),
     )
 
