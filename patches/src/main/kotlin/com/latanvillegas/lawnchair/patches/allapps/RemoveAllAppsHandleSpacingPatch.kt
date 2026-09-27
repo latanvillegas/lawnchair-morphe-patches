@@ -4,23 +4,15 @@ import app.morphe.patcher.Fingerprint
 import app.morphe.patcher.extensions.InstructionExtensions.replaceInstruction
 import app.morphe.patcher.methodCall
 import app.morphe.patcher.patch.Compatibility
+import app.morphe.patcher.patch.PatchException
 import app.morphe.patcher.patch.bytecodePatch
+import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
 import com.android.tools.smali.dexlib2.iface.instruction.TwoRegisterInstruction
+import com.android.tools.smali.dexlib2.iface.reference.FieldReference
 
 private const val ALL_APPS_CONTAINER =
     "Lcom/android/launcher3/allapps/ActivityAllAppsContainerView;"
 
-/**
- * Removes the extra top space in All Apps.
- *
- * There are two independent sources of top spacing in current Lawnchair builds:
- * 1. layoutWithoutSearchContainer() reserves room for the bottom-sheet handle.
- * 2. setInsets() uses DeviceProfile.allAppsPadding.top for the All Apps content.
- *
- * The first fingerprint forces the handle-specific branch to use zero margin.
- * The second forces the top padding passed to the All Apps container to zero while
- * leaving the horizontal and bottom padding logic untouched.
- */
 private object LayoutWithoutSearchContainerFingerprint : Fingerprint(
     definingClass = ALL_APPS_CONTAINER,
     name = "layoutWithoutSearchContainer",
@@ -67,40 +59,39 @@ val removeAllAppsHandleSpacingPatch = bytecodePatch(
     execute {
         val handleCallIndex =
             LayoutWithoutSearchContainerFingerprint.instructionMatches.first().index
-
         LayoutWithoutSearchContainerFingerprint.method.replaceInstruction(
             handleCallIndex + 1,
             "const/4 v0, 0x0",
         )
 
-        val sheetCallIndex = AllAppsSetInsetsFingerprint.instructionMatches.first().index
         val method = AllAppsSetInsetsFingerprint.method
-        val instructions = method.implementation!!.instructions
-        val start = (sheetCallIndex - 12).coerceAtLeast(0)
-        val end = (sheetCallIndex + 20).coerceAtMost(instructions.lastIndex)
+        val instructions = method.implementation?.instructions
+            ?: throw PatchException("Lawnchair All Apps spacing: setInsets has no implementation.")
 
+        // R8 moves this read substantially between Nightlies, so inspect the complete
+        // setInsets method instead of a small window around shouldShowAllAppsOnSheet().
+        // Match the actual field reference rather than Instruction.toString(), whose
+        // representation is not guaranteed to include the referenced field text.
         var patched = false
-        for (index in start..end) {
-            val instruction = instructions[index]
-            if (instruction.opcode.name == "IGET_OBJECT") {
-                for (next in (index + 1)..minOf(index + 5, end)) {
-                    val candidate = instructions[next]
-                    if (candidate.opcode.name == "IGET" &&
-                        candidate.toString().contains("Landroid/graphics/Rect;->top:I")) {
-                        val destinationRegister =
-                            (candidate as TwoRegisterInstruction).registerA
-                        method.replaceInstruction(next, "const/4 v$destinationRegister, 0x0")
-                        patched = true
-                        break
-                    }
-                }
-            }
-            if (patched) break
+        for (index in instructions.indices) {
+            val candidate = instructions[index]
+            if (candidate.opcode.name != "IGET") continue
+
+            val field = (candidate as? ReferenceInstruction)?.reference as? FieldReference
+                ?: continue
+            if (field.definingClass != "Landroid/graphics/Rect;" ||
+                field.name != "top" || field.type != "I") continue
+
+            val destinationRegister = (candidate as? TwoRegisterInstruction)?.registerA
+                ?: continue
+            method.replaceInstruction(index, "const/4 v$destinationRegister, 0x0")
+            patched = true
+            break
         }
 
         if (!patched) {
-            throw app.morphe.patcher.patch.PatchException(
-                "Lawnchair All Apps spacing: allAppsPadding.top load was not found.",
+            throw PatchException(
+                "Lawnchair All Apps spacing: Rect.top field read was not found in setInsets.",
             )
         }
     }
