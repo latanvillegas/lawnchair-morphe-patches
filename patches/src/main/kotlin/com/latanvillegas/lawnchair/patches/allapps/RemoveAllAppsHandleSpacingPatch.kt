@@ -5,7 +5,7 @@ import app.morphe.patcher.extensions.InstructionExtensions.replaceInstruction
 import app.morphe.patcher.methodCall
 import app.morphe.patcher.patch.Compatibility
 import app.morphe.patcher.patch.bytecodePatch
-import org.jf.dexlib2.iface.instruction.TwoRegisterInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.TwoRegisterInstruction
 
 private const val ALL_APPS_CONTAINER =
     "Lcom/android/launcher3/allapps/ActivityAllAppsContainerView;"
@@ -68,17 +68,12 @@ val removeAllAppsHandleSpacingPatch = bytecodePatch(
         val handleCallIndex =
             LayoutWithoutSearchContainerFingerprint.instructionMatches.first().index
 
-        // Force the handle-specific zero-margin path.
         LayoutWithoutSearchContainerFingerprint.method.replaceInstruction(
             handleCallIndex + 1,
             "const/4 v0, 0x0",
         )
 
         val sheetCallIndex = AllAppsSetInsetsFingerprint.instructionMatches.first().index
-
-        // setInsets() reads allAppsPadding.top immediately around the sheet decision.
-        // Zero the destination register of the Rect.top IGET without touching the
-        // horizontal or bottom padding logic.
         val method = AllAppsSetInsetsFingerprint.method
         val instructions = method.implementation!!.instructions
         val start = (sheetCallIndex - 12).coerceAtLeast(0)
@@ -94,10 +89,7 @@ val removeAllAppsHandleSpacingPatch = bytecodePatch(
                         candidate.toString().contains("Landroid/graphics/Rect;->top:I")) {
                         val destinationRegister =
                             (candidate as TwoRegisterInstruction).registerA
-                        method.replaceInstruction(
-                            next,
-                            "const/4 v$destinationRegister, 0x0",
-                        )
+                        method.replaceInstruction(next, "const/4 v$destinationRegister, 0x0")
                         patched = true
                         break
                     }
