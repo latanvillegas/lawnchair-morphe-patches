@@ -19,8 +19,8 @@ val removeAllAppsHandlePatch = resourcePatch(
 ) {
     compatibleWith(
         Compatibility(
-            name = "Lawnchair",
-            packageName = "app.lawnchair",
+            name = "Lawnchair Nightly",
+            packageName = "app.lawnchair.nightly",
             appIconColor = 0x8BC34A,
             targets = listOf(AppTarget("16-dev")),
         ),
