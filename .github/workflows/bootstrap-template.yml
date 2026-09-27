@@ -1,0 +1,54 @@
+name: Bootstrap Morphe patches template
+
+on:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    if: github.event.head_commit.message == 'chore: bootstrap Morphe template'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout destination
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Import official Morphe template
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/MorpheApp/morphe-patches-template.git /tmp/morphe-template
+          rsync -a --delete --exclude='.git' /tmp/morphe-template/ ./
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('patches/build.gradle.kts')
+          s = p.read_text()
+          s = s.replace('group = "app.template"', 'group = "com.latanvillegas.lawnchair.patches"')
+          s = s.replace('name = "UserXYZ Patches"', 'name = "Lawnchair Custom Patches"')
+          s = s.replace('description = "Patches for apps I like"', 'description = "Custom Lawnchair patches: AMOLED/OLED pure black and UI refinements"')
+          s = s.replace('source = "git@github.com:UserXYZ/morphe-patches.git"', 'source = "https://github.com/latanvillegas/lawnchair-morphe-patches"')
+          s = s.replace('author = "Awesome dev"', 'author = "latanvillegas"')
+          s = s.replace('website = "na"', 'website = "https://github.com/latanvillegas/lawnchair-morphe-patches"')
+          p.write_text(s)
+
+          r = Path('README.md')
+          s = r.read_text()
+          s = s.replace('👋🧩 Morphe Patches template', '🪑 Lawnchair Custom Patches')
+          s = s.replace('Template repository for Morphe Patches.', 'Custom patches for Lawnchair, distributed as a Morphe patch source.')
+          s = s.replace('Patches for apps I like.', 'Patches for Lawnchair including AMOLED/OLED pure black UI refinements.')
+          s = s.replace('xyz-user/xyz-patches', 'latanvillegas/lawnchair-morphe-patches')
+          s = s.replace('UserXYZ Patches', 'Lawnchair Custom Patches')
+          r.write_text(s)
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'chore: import official Morphe patches template'
+          git push origin main
