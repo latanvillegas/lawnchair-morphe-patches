@@ -1,0 +1,122 @@
+package com.latanvillegas.lawnchair.patches.theme
+
+import app.morphe.patcher.Fingerprint
+import app.morphe.patcher.extensions.InstructionExtensions.addInstructions
+import app.morphe.patcher.extensions.InstructionExtensions.instructions
+import app.morphe.patcher.extensions.InstructionExtensions.replaceInstruction
+import app.morphe.patcher.patch.Compatibility
+import app.morphe.patcher.patch.PatchException
+import app.morphe.patcher.patch.bytecodePatch
+import com.android.tools.smali.dexlib2.Opcode
+import com.android.tools.smali.dexlib2.iface.instruction.OneRegisterInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.ReferenceInstruction
+import com.android.tools.smali.dexlib2.iface.instruction.TwoRegisterInstruction
+import com.android.tools.smali.dexlib2.iface.reference.TypeReference
+
+/**
+ * Finds ColorOptionsKt.<clinit>() structurally. R8 renames this class on every Nightly,
+ * so do not depend on APK #5155's Lje0; name.
+ *
+ * ColorOptions owns exactly the three top-level List values staticColors,
+ * dynamicColors and dynamicColorsWithDefault. Its initializer also creates the
+ * twelve stock CustomColor entries before creating the two-element dynamic array.
+ */
+private object ColorOptionsClinitFingerprint : Fingerprint(
+    name = "<clinit>",
+    returnType = "V",
+    parameters = emptyList(),
+    custom = { method, classDef ->
+        val listFields = classDef.staticFields.count { it.type == "Ljava/util/List;" }
+        val instructions = method.implementation?.instructions?.toList() ?: return@Fingerprint false
+        val allocations = instructions.count { it.opcode == Opcode.NEW_INSTANCE }
+        listFields == 3 && allocations >= 12 && instructions.any { it.opcode == Opcode.NEW_ARRAY }
+    },
+)
+
+@Suppress("unused")
+val pureColorOptionsUiPatch = bytecodePatch(
+    name = "Pure black and white color options",
+    description = "Shows pure black and pure white as selectable Lawnchair color options.",
+) {
+    compatibleWith(
+        Compatibility(
+            name = "Lawnchair Nightly",
+            packageName = "app.lawnchair.nightly",
+            appIconColor = 0x8BC34A,
+        ),
+    )
+
+    execute {
+        val method = ColorOptionsClinitFingerprint.method
+        val instructions = method.instructions
+
+        // CustomColor is the type repeatedly allocated for the stock static palette.
+        // Resolve it from bytecode so the patch survives R8 renaming.
+        val customColorType = instructions
+            .firstNotNullOfOrNull { instruction ->
+                if (instruction.opcode != Opcode.NEW_INSTANCE) return@firstNotNullOfOrNull null
+                ((instruction as? ReferenceInstruction)?.reference as? TypeReference)?.type
+            }
+            ?: throw PatchException("Lawnchair pure colors UI: CustomColor type was not found.")
+
+        // Find the two-element ColorOption[] used to build dynamicColors. The stock
+        // sequence is: new-array, SystemAccent aput, WallpaperPrimary aput, sequenceOf.
+        val arrayIndex = instructions.indices.firstOrNull { index ->
+            if (instructions[index].opcode != Opcode.NEW_ARRAY) return@firstOrNull false
+            val newArray = instructions[index] as? ReferenceInstruction ?: return@firstOrNull false
+            val arrayType = (newArray.reference as? TypeReference)?.type ?: return@firstOrNull false
+            if (!arrayType.startsWith("[L")) return@firstOrNull false
+
+            val end = minOf(index + 14, instructions.lastIndex)
+            instructions.subList(index, end + 1).count { it.opcode == Opcode.APUT_OBJECT } == 2
+        } ?: throw PatchException("Lawnchair pure colors UI: dynamic color array was not found.")
+
+        val newArray = instructions[arrayIndex] as? TwoRegisterInstruction
+            ?: throw PatchException("Lawnchair pure colors UI: unexpected new-array instruction.")
+        val arrayRegister = newArray.registerA
+        val sizeRegister = newArray.registerB
+
+        // The array size is loaded immediately before new-array in Lawnchair's generated
+        // bytecode. Expand 2 -> 4 without assuming a particular local register number.
+        val sizeIndex = (arrayIndex - 1 downTo maxOf(0, arrayIndex - 4)).firstOrNull { index ->
+            val instruction = instructions[index]
+            instruction.opcode.name.startsWith("CONST") &&
+                (instruction as? OneRegisterInstruction)?.registerA == sizeRegister
+        } ?: throw PatchException("Lawnchair pure colors UI: dynamic array size load was not found.")
+
+        method.replaceInstruction(sizeIndex, "const/4 v$sizeRegister, 0x4")
+
+        // Insert after the second stock entry. Two scratch registers are safe here: the
+        // initializer has already completed the static palette and R8 reuses these locals
+        // immediately afterwards. Restore the original size register to 2 because the same
+        // register is reused later by dynamicColorsWithDefault.
+        val secondAput = instructions.indices
+            .drop(arrayIndex + 1)
+            .filter { instructions[it].opcode == Opcode.APUT_OBJECT }
+            .take(2)
+            .lastOrNull()
+            ?: throw PatchException("Lawnchair pure colors UI: stock dynamic entries were not found.")
+
+        val scratchObject = if (arrayRegister == 5 || sizeRegister == 5) 6 else 5
+        val scratchValue = if (scratchObject == 6 || arrayRegister == 6 || sizeRegister == 6) 7 else 6
+
+        method.addInstructions(
+            secondAput + 1,
+            """
+                new-instance v$scratchObject, $customColorType
+                const v$scratchValue, -0x1000000
+                invoke-direct {v$scratchObject, v$scratchValue}, $customColorType-><init>(I)V
+                const/4 v$scratchValue, 0x2
+                aput-object v$scratchObject, v$arrayRegister, v$scratchValue
+
+                new-instance v$scratchObject, $customColorType
+                const/4 v$scratchValue, -0x1
+                invoke-direct {v$scratchObject, v$scratchValue}, $customColorType-><init>(I)V
+                const/4 v$scratchValue, 0x3
+                aput-object v$scratchObject, v$arrayRegister, v$scratchValue
+
+                const/4 v$sizeRegister, 0x2
+            """,
+        )
+    }
+}
