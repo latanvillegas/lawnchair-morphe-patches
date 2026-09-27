@@ -26,14 +26,6 @@ private object ColorOptionsClinitFingerprint : Fingerprint(
     },
 )
 
-private fun Opcode.isIntegerConst(): Boolean = when (this) {
-    Opcode.CONST_4,
-    Opcode.CONST_16,
-    Opcode.CONST,
-    Opcode.CONST_HIGH16 -> true
-    else -> false
-}
-
 @Suppress("unused")
 val pureColorOptionsUiPatch = bytecodePatch(
     name = "Pure black and white color options",
@@ -51,41 +43,20 @@ val pureColorOptionsUiPatch = bytecodePatch(
         val method = ColorOptionsClinitFingerprint.method
         val instructions = method.instructions
 
+        // In ColorOptions.<clinit>, the first NEW_INSTANCE is CustomColor. This remains
+        // stable even when R8 renames the class itself.
         val customColorType = instructions.firstNotNullOfOrNull { instruction ->
             if (instruction.opcode != Opcode.NEW_INSTANCE) return@firstNotNullOfOrNull null
             ((instruction as? ReferenceInstruction)?.reference as? TypeReference)?.type
         } ?: throw PatchException("Lawnchair pure colors UI: CustomColor type was not found.")
 
-        // ColorOptions has more than one two-entry object array. Match the array whose
-        // size register is explicitly initialized immediately before its NEW_ARRAY.
-        // Dexlib Opcode.name is the smali mnemonic (for example "const/4"), not the
-        // uppercase enum identifier, so compare Opcode values directly.
-        var arrayIndex = -1
-        var sizeIndex = -1
-        for (index in instructions.indices) {
-            if (instructions[index].opcode != Opcode.NEW_ARRAY) continue
-            val ref = instructions[index] as? ReferenceInstruction ?: continue
-            val type = (ref.reference as? TypeReference)?.type ?: continue
-            if (!type.startsWith("[L")) continue
-            val newArray = instructions[index] as? TwoRegisterInstruction ?: continue
-
-            val end = minOf(index + 14, instructions.lastIndex)
-            if (instructions.subList(index, end + 1).count { it.opcode == Opcode.APUT_OBJECT } != 2) continue
-
-            val sizeRegister = newArray.registerB
-            val candidateSizeIndex = (index - 1 downTo maxOf(0, index - 12)).firstOrNull { previous ->
-                val instruction = instructions[previous]
-                instruction.opcode.isIntegerConst() &&
-                    (instruction as? OneRegisterInstruction)?.registerA == sizeRegister
-            } ?: continue
-
-            arrayIndex = index
-            sizeIndex = candidateSizeIndex
-            break
-        }
-
-        if (arrayIndex < 0 || sizeIndex < 0) {
-            throw PatchException("Lawnchair pure colors UI: dynamic color array with size initializer was not found.")
+        // Verified against Nightly #5155 and #5171: ColorOptions has a FILLED_NEW_ARRAY
+        // for the preset CustomColor list, then the first real NEW_ARRAY is the dynamic
+        // ColorOption array [SystemAccent, WallpaperPrimary]. Avoid heuristics based on
+        // a fixed instruction window; R8 changes the surrounding scheduling frequently.
+        val arrayIndex = instructions.indexOfFirst { it.opcode == Opcode.NEW_ARRAY }
+        if (arrayIndex <= 0) {
+            throw PatchException("Lawnchair pure colors UI: dynamic color array was not found.")
         }
 
         val newArray = instructions[arrayIndex] as? TwoRegisterInstruction
@@ -93,13 +64,34 @@ val pureColorOptionsUiPatch = bytecodePatch(
         val arrayRegister = newArray.registerA
         val sizeRegister = newArray.registerB
 
+        // In the actual #5171 DEX this is exactly:
+        //   const/4 v0, 0x2
+        //   new-array v1, v0, [Lfe0;
+        // Require the preceding instruction to write the NEW_ARRAY size register.
+        val sizeInstruction = instructions[arrayIndex - 1]
+        val sizeIndex = if ((sizeInstruction as? OneRegisterInstruction)?.registerA == sizeRegister) {
+            arrayIndex - 1
+        } else {
+            throw PatchException("Lawnchair pure colors UI: array size initializer register did not match.")
+        }
+
         method.replaceInstruction(sizeIndex, "const/4 v$sizeRegister, 0x4")
 
-        val secondAput = instructions.indices.drop(arrayIndex + 1)
-            .filter { instructions[it].opcode == Opcode.APUT_OBJECT }
+        // Only consider APUT_OBJECT instructions belonging to this array. This avoids
+        // accidentally selecting entries from a later two-element array in the clinit.
+        val aputs = instructions.indices.drop(arrayIndex + 1)
+            .filter { index ->
+                val instruction = instructions[index]
+                instruction.opcode == Opcode.APUT_OBJECT &&
+                    (instruction as? com.android.tools.smali.dexlib2.iface.instruction.ThreeRegisterInstruction)?.registerB == arrayRegister
+            }
             .take(2)
-            .lastOrNull()
-            ?: throw PatchException("Lawnchair pure colors UI: stock dynamic entries were not found.")
+            .toList()
+
+        if (aputs.size != 2) {
+            throw PatchException("Lawnchair pure colors UI: stock dynamic entries were not found.")
+        }
+        val secondAput = aputs.last()
 
         val scratchObject = if (arrayRegister == 5 || sizeRegister == 5) 6 else 5
         val scratchValue = if (scratchObject == 6 || arrayRegister == 6 || sizeRegister == 6) 7 else 6
