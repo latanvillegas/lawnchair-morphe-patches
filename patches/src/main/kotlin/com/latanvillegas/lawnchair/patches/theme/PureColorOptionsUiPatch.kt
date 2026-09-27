@@ -26,6 +26,14 @@ private object ColorOptionsClinitFingerprint : Fingerprint(
     },
 )
 
+private fun Opcode.isIntegerConst(): Boolean = when (this) {
+    Opcode.CONST_4,
+    Opcode.CONST_16,
+    Opcode.CONST,
+    Opcode.CONST_HIGH16 -> true
+    else -> false
+}
+
 @Suppress("unused")
 val pureColorOptionsUiPatch = bytecodePatch(
     name = "Pure black and white color options",
@@ -48,9 +56,10 @@ val pureColorOptionsUiPatch = bytecodePatch(
             ((instruction as? ReferenceInstruction)?.reference as? TypeReference)?.type
         } ?: throw PatchException("Lawnchair pure colors UI: CustomColor type was not found.")
 
-        // ColorOptions has more than one two-entry object array. The previous implementation
-        // could accidentally select the later sequence-combining array. Select the array only
-        // when its size register is initialized by a nearby CONST before NEW_ARRAY.
+        // ColorOptions has more than one two-entry object array. Match the array whose
+        // size register is explicitly initialized immediately before its NEW_ARRAY.
+        // Dexlib Opcode.name is the smali mnemonic (for example "const/4"), not the
+        // uppercase enum identifier, so compare Opcode values directly.
         var arrayIndex = -1
         var sizeIndex = -1
         for (index in instructions.indices) {
@@ -66,7 +75,7 @@ val pureColorOptionsUiPatch = bytecodePatch(
             val sizeRegister = newArray.registerB
             val candidateSizeIndex = (index - 1 downTo maxOf(0, index - 12)).firstOrNull { previous ->
                 val instruction = instructions[previous]
-                instruction.opcode.name.startsWith("CONST") &&
+                instruction.opcode.isIntegerConst() &&
                     (instruction as? OneRegisterInstruction)?.registerA == sizeRegister
             } ?: continue
 
