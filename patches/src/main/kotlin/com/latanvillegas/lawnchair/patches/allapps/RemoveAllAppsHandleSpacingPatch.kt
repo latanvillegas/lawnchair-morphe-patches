@@ -5,6 +5,7 @@ import app.morphe.patcher.extensions.InstructionExtensions.replaceInstruction
 import app.morphe.patcher.methodCall
 import app.morphe.patcher.patch.Compatibility
 import app.morphe.patcher.patch.bytecodePatch
+import org.jf.dexlib2.iface.instruction.TwoRegisterInstruction
 
 private const val ALL_APPS_CONTAINER =
     "Lcom/android/launcher3/allapps/ActivityAllAppsContainerView;"
@@ -76,8 +77,8 @@ val removeAllAppsHandleSpacingPatch = bytecodePatch(
         val sheetCallIndex = AllAppsSetInsetsFingerprint.instructionMatches.first().index
 
         // setInsets() reads allAppsPadding.top immediately around the sheet decision.
-        // Zero the result register used by that top-padding calculation without touching
-        // left/right/bottom padding. This keeps the patch local to the All Apps container.
+        // Zero the destination register of the Rect.top IGET without touching the
+        // horizontal or bottom padding logic.
         val method = AllAppsSetInsetsFingerprint.method
         val instructions = method.implementation!!.instructions
         val start = (sheetCallIndex - 12).coerceAtLeast(0)
@@ -87,19 +88,18 @@ val removeAllAppsHandleSpacingPatch = bytecodePatch(
         for (index in start..end) {
             val instruction = instructions[index]
             if (instruction.opcode.name == "IGET_OBJECT") {
-                // DeviceProfile.allAppsPadding is a Rect. The following IGET of Rect.top
-                // yields the integer top padding; replace that load with zero.
                 for (next in (index + 1)..minOf(index + 5, end)) {
                     val candidate = instructions[next]
-                    if (candidate.opcode.name == "IGET") {
-                        val text = candidate.toString()
-                        if (text.contains("Landroid/graphics/Rect;->top:I")) {
-                            val registerA =
-                                (candidate as org.jf.dexlib2.iface.instruction.OneRegisterInstruction).registerA
-                            method.replaceInstruction(next, "const/4 v$registerA, 0x0")
-                            patched = true
-                            break
-                        }
+                    if (candidate.opcode.name == "IGET" &&
+                        candidate.toString().contains("Landroid/graphics/Rect;->top:I")) {
+                        val destinationRegister =
+                            (candidate as TwoRegisterInstruction).registerA
+                        method.replaceInstruction(
+                            next,
+                            "const/4 v$destinationRegister, 0x0",
+                        )
+                        patched = true
+                        break
                     }
                 }
             }
